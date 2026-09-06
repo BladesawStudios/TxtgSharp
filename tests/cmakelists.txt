@@ -1,7 +1,0 @@
-add_executable(txtg_test
-    ./src/include/utils/file_util.h
-    ./src/main.cpp
-)
-
-target_include_directories(txtg_test PRIVATE ./src/include)
-target_link_libraries(txtg_test PUBLIC txtg)
