@@ -33,6 +33,18 @@
 
 # Build
 build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+Makefile
+
+# .NET
+**/bin/
+**/obj/
+*.user
+*.suo
 
 # clangd cache
 .cache/
