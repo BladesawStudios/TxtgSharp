@@ -37,3 +37,6 @@ TxtgSharp.Cli info MaterialAlb.txtg
 # decode ASTC layers to PNG
 TxtgSharp.Cli dump MaterialAlb.txtg ./out 0 5 97
 ```
+
+## Credit
+This was based on the bones of [EPD-Libraries/txtg](https://github.com/EPD-Libraries/txtg)
