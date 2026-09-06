@@ -5,6 +5,7 @@ public enum TxtgFormat
 {
     Unknown = 0,
     Astc4x4Srgb,
+    Astc4x4Unorm,
     Astc8x5Unorm,
     Astc8x8Unorm,
     Astc8x8Srgb,
@@ -32,6 +33,7 @@ public static class TxtgFormats
         0x102 => TxtgFormat.Astc8x8Unorm,
         0x105 => TxtgFormat.Astc8x8Srgb,
         0x109 => TxtgFormat.Astc4x4Srgb,
+        0x10A => TxtgFormat.Astc4x4Unorm,
         0x202 => TxtgFormat.Bc1Unorm,
         0x203 => TxtgFormat.Bc1UnormSrgb,
         0x302 => TxtgFormat.Bc1Unorm,
@@ -43,7 +45,7 @@ public static class TxtgFormats
     };
 
     public static bool IsAstc(this TxtgFormat format) => format is
-        TxtgFormat.Astc4x4Srgb or TxtgFormat.Astc8x5Unorm or
+        TxtgFormat.Astc4x4Srgb or TxtgFormat.Astc4x4Unorm or TxtgFormat.Astc8x5Unorm or
         TxtgFormat.Astc8x8Unorm or TxtgFormat.Astc8x8Srgb;
 
     public static bool IsSrgb(this TxtgFormat format) => format is
@@ -53,7 +55,7 @@ public static class TxtgFormats
     /// <summary>All supported formats use 16-byte blocks except BC1 and BC4, which use 8.</summary>
     public static TxtgBlockInfo BlockInfo(this TxtgFormat format) => format switch
     {
-        TxtgFormat.Astc4x4Srgb => new TxtgBlockInfo(4, 4, 16),
+        TxtgFormat.Astc4x4Srgb or TxtgFormat.Astc4x4Unorm => new TxtgBlockInfo(4, 4, 16),
         TxtgFormat.Astc8x5Unorm => new TxtgBlockInfo(8, 5, 16),
         TxtgFormat.Astc8x8Unorm or TxtgFormat.Astc8x8Srgb => new TxtgBlockInfo(8, 8, 16),
         TxtgFormat.Bc1Unorm or TxtgFormat.Bc1UnormSrgb => new TxtgBlockInfo(4, 4, 8),

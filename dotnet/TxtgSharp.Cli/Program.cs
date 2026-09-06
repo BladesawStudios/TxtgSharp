@@ -112,6 +112,7 @@ static int Dump(string[] args)
 
         Console.WriteLine($"  layer {layer}: {surface.Width}x{surface.Height}, " +
                           $"{rgba.Length:N0} bytes rgba -> {Path.GetFileName(outPath)}");
+        Console.WriteLine("    " + ChannelStats(rgba));
     }
 
     return 0;
@@ -119,8 +120,42 @@ static int Dump(string[] args)
 
 static FootprintType FootprintOf(TxtgFormat format) => format switch
 {
-    TxtgFormat.Astc4x4Srgb => FootprintType.Footprint4x4,
+    TxtgFormat.Astc4x4Srgb or TxtgFormat.Astc4x4Unorm => FootprintType.Footprint4x4,
     TxtgFormat.Astc8x5Unorm => FootprintType.Footprint8x5,
     TxtgFormat.Astc8x8Unorm or TxtgFormat.Astc8x8Srgb => FootprintType.Footprint8x8,
     _ => throw new NotSupportedException($"No ASTC footprint for {format}.")
 };
+
+// Per-channel statistics say what a texture actually holds without trusting any shader:
+// a two-channel tangent normal sits near 0.5 in R and G with x^2+y^2 <= 1, whereas an
+// occlusion or roughness channel has its own distribution entirely.
+static string ChannelStats(byte[] rgba)
+{
+    double[] sum = new double[4];
+    byte[] min = [255, 255, 255, 255];
+    byte[] max = [0, 0, 0, 0];
+    long pixels = rgba.Length / 4;
+    long inUnitDisc = 0;
+
+    for (long i = 0; i < pixels; i++)
+    {
+        long o = i * 4;
+        for (int c = 0; c < 4; c++)
+        {
+            byte v = rgba[o + c];
+            sum[c] += v;
+            if (v < min[c]) min[c] = v;
+            if (v > max[c]) max[c] = v;
+        }
+
+        double x = rgba[o] / 255.0 * 2.0 - 1.0;
+        double y = rgba[o + 1] / 255.0 * 2.0 - 1.0;
+        if (x * x + y * y <= 1.0) inUnitDisc++;
+    }
+
+    string[] names = ["R", "G", "B", "A"];
+    string stats = string.Join("  ", names.Select((n, c) =>
+        $"{n} mean {sum[c] / pixels / 255.0:F3} [{min[c] / 255.0:F2}-{max[c] / 255.0:F2}]"));
+
+    return $"{stats}  |  (2R-1)^2+(2G-1)^2<=1 for {100.0 * inUnitDisc / pixels:F1}% of texels";
+}
