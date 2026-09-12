@@ -41,7 +41,20 @@ public static class TxtgFormats
         0xB0B => TxtgFormat.R8G8Unorm,
         0xC0C => TxtgFormat.R8Unorm,
 
-        _ => TxtgFormat.Unknown
+        // A handful of files carry a low byte nothing else uses - 0x305, 0x605, 0x709 and a
+        // few more, eighty-odd files across the whole of TexToGo. The family in the high byte
+        // is what decides how the blocks are laid out, and only the colour space is in doubt,
+        // so a block-compressed family is still readable. ASTC is not: its block size is in
+        // the low byte too, and guessing it wrong decodes to noise.
+        _ => (code >> 8) switch
+        {
+            2 or 3 => TxtgFormat.Bc1Unorm,
+            5 => TxtgFormat.Bc3UnormSrgb,
+            6 => TxtgFormat.Bc4Unorm,
+            7 => TxtgFormat.Bc5Unorm,
+            9 => TxtgFormat.Bc7Unorm,
+            _ => TxtgFormat.Unknown
+        }
     };
 
     public static int ToRawCode(this TxtgFormat format) => format switch
