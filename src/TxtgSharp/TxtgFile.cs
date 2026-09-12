@@ -1,4 +1,7 @@
 using System.Buffers.Binary;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 namespace TxtgSharp;
 
@@ -9,14 +12,52 @@ namespace TxtgSharp;
 /// </summary>
 public sealed class TxtgSurface
 {
-    public required int ArrayIndex { get; init; }
-    public required int MipLevel { get; init; }
-    public required int Width { get; init; }
-    public required int Height { get; init; }
-    public required byte[] Data { get; init; }
+    private readonly TxtgBlockInfo _block;
+    private byte[]? _swizzled;
+    private byte[]? _data;
+
+    internal TxtgSurface(int arrayIndex, int mipLevel, int width, int height, byte[] swizzled, TxtgBlockInfo block)
+    {
+        ArrayIndex = arrayIndex;
+        MipLevel = mipLevel;
+        Width = width;
+        Height = height;
+        SwizzledSize = swizzled.Length;
+        _swizzled = swizzled;
+        _block = block;
+    }
+
+    public int ArrayIndex { get; }
+    public int MipLevel { get; }
+    public int Width { get; }
+    public int Height { get; }
 
     /// <summary>Size of the swizzled payload before deswizzling; diagnostic for layout checks.</summary>
-    public required int SwizzledSize { get; init; }
+    public int SwizzledSize { get; }
+
+    /// <summary>
+    /// Deswizzled, still block compressed. Deswizzling happens on first access and the
+    /// swizzled payload is released afterwards, so a caller that only wants one mip does not
+    /// pay for the rest of the container.
+    /// </summary>
+    public byte[] Data
+    {
+        get
+        {
+            byte[]? data = Volatile.Read(ref _data);
+            if (data is not null)
+                return data;
+
+            // A race just deswizzles twice to the same bytes; the first result published wins.
+            data = TxtgFile.Deswizzle(_swizzled!, Width, Height, _block);
+            byte[]? won = Interlocked.CompareExchange(ref _data, data, null);
+            if (won is not null)
+                return won;
+
+            _swizzled = null;
+            return data;
+        }
+    }
 }
 
 /// <summary>
@@ -109,18 +150,14 @@ public sealed class TxtgFile
             int mipWidth = Math.Max(1, width >> mip);
             int mipHeight = Math.Max(1, height >> mip);
 
-            byte[] swizzled = decompressor.Unwrap(data.Slice(cursor, compressedSize)).ToArray();
+            // Unwrap(src) allocates its own buffer and hands back a span over it, so taking
+            // the array form here would copy the whole payload a second time.
+            ReadOnlySpan<byte> frame = data.Slice(cursor, compressedSize);
+            byte[] swizzled = new byte[ZstdSharp.Decompressor.GetDecompressedSize(frame)];
+            decompressor.Unwrap(frame, swizzled);
             cursor += compressedSize;
 
-            surfaces.Add(new TxtgSurface
-            {
-                ArrayIndex = layer,
-                MipLevel = mip,
-                Width = mipWidth,
-                Height = mipHeight,
-                SwizzledSize = swizzled.Length,
-                Data = Deswizzle(swizzled, mipWidth, mipHeight, block)
-            });
+            surfaces.Add(new TxtgSurface(layer, mip, mipWidth, mipHeight, swizzled, block));
         }
 
         return new TxtgFile
@@ -146,7 +183,14 @@ public sealed class TxtgFile
     /// a "block" stacks <c>blockHeight</c> GOBs vertically, and blocks run in column-major
     /// order across the image.
     /// </summary>
-    private static byte[] Deswizzle(byte[] source, int width, int height, TxtgBlockInfo block)
+    /// <remarks>
+    /// Walks one GOB at a time. A GOB is 512 contiguous source bytes spanning 8 rows, so this
+    /// order keeps reads local instead of striding the whole surface once per row. Within a
+    /// GOB row the transfer unit is a 16-byte sector: every term of the source address either
+    /// selects a sector or is <c>xBytes % 16</c>, so an aligned 16-byte run of row bytes is
+    /// contiguous on both sides whatever the format's block size.
+    /// </remarks>
+    internal static byte[] Deswizzle(byte[] source, int width, int height, TxtgBlockInfo block)
     {
         int widthInBlocks = DivRoundUp(width, block.Width);
         int heightInBlocks = DivRoundUp(height, block.Height);
@@ -154,39 +198,54 @@ public sealed class TxtgFile
 
         int blockHeight = BlockHeight(heightInBlocks);
         int gobsPerRow = DivRoundUp(widthInBlocks * bpp, 64);
+        int gobColumnBytes = 512 * blockHeight;
+        int blockRowBytes = gobColumnBytes * gobsPerRow;
+        int blockRows = 8 * blockHeight;
+        int rowBytes = widthInBlocks * bpp;
 
-        byte[] result = new byte[widthInBlocks * heightInBlocks * bpp];
+        byte[] result = new byte[rowBytes * heightInBlocks];
 
-        for (int y = 0; y < heightInBlocks; y++)
+        ref byte sourceBase = ref MemoryMarshal.GetReference(source.AsSpan());
+        ref byte resultBase = ref MemoryMarshal.GetReference(result.AsSpan());
+
+        for (int gobY = 0; gobY < heightInBlocks; gobY += 8)
         {
-            for (int x = 0; x < widthInBlocks; x++)
-            {
-                int offset = SwizzledOffset(x, y, gobsPerRow, bpp, blockHeight);
-                int destination = (y * widthInBlocks + x) * bpp;
+            int gobRowBase = (gobY / blockRows) * blockRowBytes + (gobY % blockRows / 8) * 512;
 
-                if (offset < 0 || offset + bpp > source.Length) continue;
-                Buffer.BlockCopy(source, offset, result, destination, bpp);
+            for (int gobX = 0; gobX < gobsPerRow; gobX++)
+            {
+                int gobBase = gobRowBase + gobX * gobColumnBytes;
+                int gobXBytes = gobX * 64;
+
+                int rows = Math.Min(8, heightInBlocks - gobY);
+                for (int y = 0; y < rows; y++)
+                {
+                    int rowBase = gobBase + (y >> 1) * 64 + (y & 1) * 16;
+                    int destinationRow = (gobY + y) * rowBytes;
+
+                    for (int sector = 0; sector < 4; sector++)
+                    {
+                        int xBytes = gobXBytes + sector * 16;
+                        if (xBytes >= rowBytes) break;
+
+                        int offset = rowBase + (sector >> 1) * 256 + (sector & 1) * 32;
+                        if (offset < 0 || offset >= source.Length) continue;
+
+                        int length = Math.Min(16, rowBytes - xBytes);
+                        length = Math.Min(length, source.Length - offset);
+
+                        if (length == 16)
+                            Unsafe.WriteUnaligned(
+                                ref Unsafe.Add(ref resultBase, (nint)(destinationRow + xBytes)),
+                                Unsafe.ReadUnaligned<Vector128<byte>>(ref Unsafe.Add(ref sourceBase, (nint)offset)));
+                        else
+                            Buffer.BlockCopy(source, offset, result, destinationRow + xBytes, length);
+                    }
+                }
             }
         }
 
         return result;
-    }
-
-    private static int SwizzledOffset(int x, int y, int gobsPerRow, int bytesPerBlock, int blockHeight)
-    {
-        int xBytes = x * bytesPerBlock;
-
-        // Which block-of-GOBs the texel falls in, then where inside that GOB.
-        int gob = (y / (8 * blockHeight)) * 512 * blockHeight * gobsPerRow
-                + (xBytes / 64) * 512 * blockHeight
-                + (y % (8 * blockHeight) / 8) * 512;
-
-        return gob
-            + (xBytes % 64 / 32) * 256
-            + (y % 8 / 2) * 64
-            + (xBytes % 32 / 16) * 32
-            + (y % 2) * 16
-            + xBytes % 16;
     }
 
     /// <summary>GOBs stacked per block, as a power of two capped at 16.</summary>
