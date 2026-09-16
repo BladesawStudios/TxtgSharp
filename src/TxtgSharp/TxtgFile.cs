@@ -2,16 +2,6 @@ using System.Buffers.Binary;
 
 namespace TxtgSharp;
 
-/// <summary>
-/// One texture surface: a single mip level of a single array layer, stored independently in
-/// the container. <see cref="Data"/> is deswizzled but still block compressed, so it can go
-/// straight to a compressed GPU upload where the format is supported.
-/// </summary>
-/// <remarks>
-/// A surface keeps the zstd frame it was read from, so a container that is written back
-/// unchanged reproduces the original bytes without recompressing anything. Assigning
-/// <see cref="Data"/> drops that shortcut for this surface and nothing else.
-/// </remarks>
 public sealed class TxtgSurface
 {
     private readonly TxtgBlockInfo _block;
@@ -34,36 +24,18 @@ public sealed class TxtgSurface
     public int Width { get; }
     public int Height { get; }
 
-    /// <summary>
-    /// Size of the swizzled payload before deswizzling; diagnostic for layout checks. Zero
-    /// until the payload is unwrapped, for the rare frame that does not declare its size.
-    /// </summary>
     public int SwizzledSize { get; internal set; }
 
-    /// <summary>Raw index-table entry, preserved so a repack keeps the original table.</summary>
     internal uint IndexEntry { get; set; }
 
-    /// <summary>The word that follows each compressed size; 6 in every retail container.</summary>
     internal uint Flags { get; set; } = DefaultFlags;
 
     internal const uint DefaultFlags = 6;
 
-    /// <summary>Length <see cref="Data"/> must have: one tightly packed row of blocks per block row.</summary>
     public int DataLength => TxtgSwizzle.LinearSize(Width, Height, _block);
 
-    /// <summary>True once <see cref="Data"/> has been assigned, so saving must re-encode this surface.</summary>
     public bool IsModified { get; private set; }
 
-    /// <summary>
-    /// Deswizzled, still block compressed. Deswizzling happens on first access and the
-    /// swizzled payload is released afterwards, so a caller that only wants one mip does not
-    /// pay for the rest of the container.
-    /// </summary>
-    /// <remarks>
-    /// Assigning replaces the surface's contents; the value must be <see cref="DataLength"/>
-    /// bytes of blocks in the container's own format, laid out left to right, top to bottom.
-    /// Reads are safe to race, assignment is not.
-    /// </remarks>
     public byte[] Data
     {
         get
@@ -72,7 +44,6 @@ public sealed class TxtgSurface
             if (data is not null)
                 return data;
 
-            // A race just deswizzles twice to the same bytes; the first result published wins.
             data = TxtgSwizzle.Deswizzle(Swizzled(), Width, Height, _block);
             byte[]? won = Interlocked.CompareExchange(ref _data, data, null);
             if (won is not null)
@@ -102,11 +73,6 @@ public sealed class TxtgSurface
         _source = compressed;
         SwizzledSize = swizzledSize;
     }
-
-    /// <summary>
-    /// The surface as the container stores it: block-linear, before deswizzling. Useful for a
-    /// tool that writes its own container, or to check a re-swizzle against the original.
-    /// </summary>
     public byte[] Swizzled()
     {
         if (_swizzled is not null)
@@ -125,23 +91,12 @@ public sealed class TxtgSurface
 
         byte[] data = _data!;
 
-        // A replaced surface keeps the length the original had. Retail payloads are trimmed to
-        // the last byte the image occupies, and a freshly computed size lands on that same
-        // value, so this only matters for containers that trimmed further still.
         int size = SwizzledSize > 0 ? SwizzledSize : TxtgSwizzle.SwizzledSize(Width, Height, _block);
 
-        // Where a surface's height does not fill its last block row, the leftover rows are
-        // padding the image never samples - and TotK ships them populated rather than zeroed.
-        // Swizzling over the original payload leaves them as they were, so replacing a surface
-        // changes only the bytes the image actually occupies.
         byte[]? seed = _source is null ? null : TxtgFile.Decompress(_source, SwizzledSize);
         return _swizzled = TxtgSwizzle.Swizzle(data, Width, Height, _block, size, seed);
     }
 
-    /// <summary>
-    /// The zstd frame to write. An untouched surface hands back the frame it was read from,
-    /// so only surfaces the caller actually replaced cost a swizzle and a compression pass.
-    /// </summary>
     internal byte[] Compressed(ZstdSharp.Compressor compressor)
     {
         if (!IsModified && _source is not null)
@@ -156,14 +111,6 @@ public sealed class TxtgSurface
     }
 }
 
-/// <summary>
-/// Reader and writer for the Tears of the Kingdom <c>TexToGo</c> (<c>.txtg</c>) texture container.
-/// </summary>
-/// <remarks>
-/// Layout: a fixed 0x50 header, then an index table of
-/// <c>mipCount * layerCount</c> entries, then the matching compressed-size table, then the
-/// zstd payloads back to back. Each payload holds one swizzled surface.
-/// </remarks>
 public sealed class TxtgFile
 {
     private const int HeaderSize = 0x50;
@@ -175,26 +122,39 @@ public sealed class TxtgFile
     public int Width { get; private init; }
     public int Height { get; private init; }
 
-    /// <summary>Number of array layers.</summary>
     public int LayerCount { get; private init; }
 
     public int MipCount { get; private init; }
 
-    /// <summary>The declared format family and colour space. For geometry use <see cref="BlockInfo"/>.</summary>
     public TxtgFormat Format { get; private init; }
 
-    /// <summary>The format code exactly as the header declares it, and exactly as it is written back.</summary>
     public int RawFormatCode { get; private init; }
 
-    /// <summary>
-    /// Block geometry the container's surfaces actually use. The footprint comes from the
-    /// header's settings word rather than the format code, which does not distinguish ASTC
-    /// block sizes - see <see cref="TxtgFormats.TryGetFootprint"/>.
-    /// </summary>
     public TxtgBlockInfo BlockInfo { get; private init; }
 
-    /// <summary>Surfaces in container order, which is the order they are written back in.</summary>
     public IReadOnlyList<TxtgSurface> Surfaces { get; private init; } = [];
+
+    public string FormatName
+    {
+        get
+        {
+            string family = Format switch
+            {
+                TxtgFormat.Bc1Unorm or TxtgFormat.Bc1UnormSrgb => "BC1",
+                TxtgFormat.Bc3UnormSrgb => "BC3",
+                TxtgFormat.Bc4Unorm => "BC4",
+                TxtgFormat.Bc5Unorm => "BC5",
+                TxtgFormat.Bc7Unorm => "BC7",
+                TxtgFormat.R8Unorm => "R8",
+                TxtgFormat.R8G8Unorm => "R8G8",
+                TxtgFormat.R8G8B8A8Unorm => "R8G8B8A8",
+                _ when Format.IsAstc() => $"ASTC {BlockInfo.Width}x{BlockInfo.Height}",
+                _ => Format.ToString()
+            };
+
+            return $"{family} {(Format.IsSrgb() ? "sRGB" : "unorm")}";
+        }
+    }
 
     public static TxtgFile FromFile(string path) => FromBytes(File.ReadAllBytes(path));
 
@@ -218,18 +178,7 @@ public sealed class TxtgFile
         int rawFormat = BinaryPrimitives.ReadUInt16LittleEndian(data[0x3C..]);
         uint setting2 = BinaryPrimitives.ReadUInt32LittleEndian(data[0x44..]);
 
-        // The declared code does not distinguish ASTC block sizes, so it can name a footprint
-        // the surfaces do not use - terrain arrays declare 0x101 (8x5) but are really 8x8.
-        // The label gets nudged onto the right member; the code itself is left alone so it
-        // survives a write back.
-        int labelFormat = setting2 switch
-        {
-            32628 => 0x101,
-            32631 => 0x102,
-            _ => rawFormat
-        };
-
-        TxtgFormat format = TxtgFormats.FromRawCode(labelFormat);
+        TxtgFormat format = TxtgFormats.FromRawCode(rawFormat);
         if (format == TxtgFormat.Unknown)
             throw new InvalidDataException($"Unknown txtg format code 0x{rawFormat:X4}.");
 
@@ -277,9 +226,6 @@ public sealed class TxtgFile
                 Flags = flags[i]
             };
 
-            // Deswizzling is deferred, so keep the frame and read its declared size rather than
-            // decompressing every surface up front. Every retail frame declares one; a frame
-            // written by some other tool need not, and then the layout says how big it is.
             ulong declared = ZstdSharp.Decompressor.GetDecompressedSize(frame);
             surface.SetSource(frame.ToArray(), declared is > 0 and <= int.MaxValue ? (int)declared : 0);
             surfaces.Add(surface);
@@ -299,30 +245,17 @@ public sealed class TxtgFile
         };
     }
 
-    /// <summary>Surfaces for one mip level, ordered by array layer - the shape an array upload wants.</summary>
     public IEnumerable<TxtgSurface> LayersOfMip(int mip) =>
         Surfaces.Where(s => s.MipLevel == mip).OrderBy(s => s.ArrayIndex);
 
-    /// <summary>The surface for one layer and mip, or null if the container does not carry it.</summary>
     public TxtgSurface? Surface(int layer, int mip) =>
         Surfaces.FirstOrDefault(s => s.ArrayIndex == layer && s.MipLevel == mip);
 
-    // ---------------------------------------------------------------- writing
-
-    /// <summary>
-    /// Serialises the container. Surfaces left untouched are written back as the exact zstd
-    /// frames they were read from, so a read-then-write round trip of a retail file reproduces
-    /// it byte for byte; replaced surfaces are re-swizzled and recompressed.
-    /// </summary>
     public byte[] ToBytes(int compressionLevel = 12)
     {
         if (_header.Length != HeaderSize)
             throw new InvalidOperationException("No header to write; build the container with Create.");
 
-        // The header goes out exactly as it came in, digest and sampler settings and all - none
-        // of the fields it holds can change once a container is loaded. A truncated file is the
-        // one case where the surfaces no longer agree with it, and writing that back would
-        // produce a header promising rows the table does not have.
         if (Surfaces.Count != LayerCount * MipCount)
             throw new InvalidOperationException(
                 $"Header declares {LayerCount * MipCount} surfaces but only {Surfaces.Count} are present; " +
@@ -362,19 +295,25 @@ public sealed class TxtgFile
 
     public void Save(string path, int compressionLevel = 12) => File.WriteAllBytes(path, ToBytes(compressionLevel));
 
-    /// <summary>
-    /// Builds a container from linear, block-compressed surfaces. Surfaces are written in the
-    /// order given; retail files run layer-major, with every mip of a layer before the next.
-    /// </summary>
-    /// <remarks>
-    /// A handful of header words - the 32-byte digest at 0x1C, the sampler settings at 0x40 and
-    /// 0x4D - carry values this library cannot derive, and get the value retail files use most
-    /// often. Editing a container read with <see cref="FromFile"/> keeps the real ones and is the
-    /// safer route whenever an original exists.
-    /// </remarks>
     public static TxtgFile Create(
         int width, int height, TxtgFormat format, IReadOnlyList<TxtgSurfaceData> surfaces,
+        TxtgBlockInfo? blockInfo = null) =>
+        Build(null, width, height, format, surfaces, blockInfo);
+
+    public static TxtgFile CreateFrom(
+        TxtgFile template, int width, int height, TxtgFormat format, IReadOnlyList<TxtgSurfaceData> surfaces,
         TxtgBlockInfo? blockInfo = null)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+        if (template._header.Length != HeaderSize)
+            throw new ArgumentException("Template has no header to borrow.", nameof(template));
+
+        return Build(template._header, width, height, format, surfaces, blockInfo);
+    }
+
+    private static TxtgFile Build(
+        byte[]? templateHeader, int width, int height, TxtgFormat format,
+        IReadOnlyList<TxtgSurfaceData> surfaces, TxtgBlockInfo? blockInfo)
     {
         ArgumentNullException.ThrowIfNull(surfaces);
         if (surfaces.Count == 0)
@@ -397,7 +336,6 @@ public sealed class TxtgFile
 
             TxtgSurface surface = new(source.ArrayIndex, source.MipLevel, mipWidth, mipHeight, block)
             {
-                // Layer in the low half, mip next, then the per-entry constant retail files use.
                 IndexEntry = (uint)source.ArrayIndex | (uint)source.MipLevel << 16 | 1u << 24,
                 Flags = TxtgSurface.DefaultFlags,
                 Data = source.Data
@@ -405,27 +343,30 @@ public sealed class TxtgFile
             built.Add(surface);
         }
 
+        int rawCode = format.ToRawCode();
+
         return new TxtgFile
         {
-            _header = DefaultHeader(width, height, layers, mips, format.ToRawCode(), block),
+            _header = BuildHeader(templateHeader, width, height, layers, mips, rawCode, block),
             Width = width,
             Height = height,
             LayerCount = layers,
             MipCount = mips,
             Format = format,
-            RawFormatCode = format.ToRawCode(),
+            RawFormatCode = rawCode,
             BlockInfo = block,
             Surfaces = built
         };
     }
 
-    /// <summary>
-    /// A 0x50 header carrying the fields this library understands, with the rest set to the
-    /// values every retail container agrees on (or, where they disagree, the commonest).
-    /// </summary>
-    private static byte[] DefaultHeader(int width, int height, int layers, int mips, int rawFormat, TxtgBlockInfo block)
+    private static byte[] BuildHeader(
+        byte[]? template, int width, int height, int layers, int mips, int rawFormat, TxtgBlockInfo block)
     {
         byte[] header = new byte[HeaderSize];
+        if (template is not null)
+            template.CopyTo(header, 0);
+        else
+            WriteDefaultHeaderFields(header);
 
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(0), HeaderSize);
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(2), ExpectedVersion);
@@ -434,33 +375,29 @@ public sealed class TxtgFile
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(10), (ushort)height);
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(12), (ushort)layers);
         header[14] = (byte)mips;
+        BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(0x3C), (ushort)rawFormat);
+        BinaryPrimitives.WriteUInt32LittleEndian(
+            header.AsSpan(0x44), TxtgFormats.ToSetting2(block.Width, block.Height));
+
+        return header;
+    }
+
+    private static void WriteDefaultHeaderFields(byte[] header)
+    {
         header[15] = 2;
         header[0x10] = 1;
 
-        // Channel swizzle: identity RGBA.
         header[0x18] = 0;
         header[0x19] = 1;
         header[0x1A] = 2;
         header[0x1B] = 3;
 
-        // 0x1C..0x3C is a 32-byte digest left zeroed; no retail file zeroes it, but nothing
-        // observed reads it back either.
-        BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(0x3C), (ushort)rawFormat);
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(0x3E), 768);
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0x40), 0x42900000);
-        BinaryPrimitives.WriteUInt32LittleEndian(
-            header.AsSpan(0x44), TxtgFormats.ToSetting2(block.Width, block.Height));
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0x48), 0x02000200);
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0x4C), 0x00010502);
-
-        return header;
     }
 
-    /// <summary>
-    /// Unwraps one surface payload. A frame that declares its content size is decompressed
-    /// straight into a buffer of that size; one that does not - which no retail container
-    /// produces, but another tool's writer might - falls back to letting zstd size it.
-    /// </summary>
     internal static byte[] Decompress(byte[] frame, int size)
     {
         using ZstdSharp.Decompressor decompressor = new();
@@ -473,5 +410,4 @@ public sealed class TxtgFile
     }
 }
 
-/// <summary>One surface handed to <see cref="TxtgFile.Create"/>: linear, still block compressed.</summary>
 public readonly record struct TxtgSurfaceData(int ArrayIndex, int MipLevel, byte[] Data);

@@ -3,24 +3,44 @@ using AstcSharp.Core;
 using TxtgSharp;
 using TxtgSharp.Cli;
 
-if (args.Length == 0)
+if (args.Length == 0 || args[0] is "-h" or "--help")
 {
-    Console.WriteLine("Usage:");
-    Console.WriteLine("  TxtgSharp.Cli info <file.txtg> [more.txtg ...]");
-    Console.WriteLine("  TxtgSharp.Cli dump <file.txtg> <out_dir> [layer ...]   (mip 0, defaults to layer 0)");
-    Console.WriteLine("  TxtgSharp.Cli replace <file.txtg> <image.png> <out.txtg> [layer]   (ASTC only)");
-    Console.WriteLine("  TxtgSharp.Cli roundtrip <file.txtg> [more.txtg ...]   (read, write, compare)");
+    Usage();
+    return args.Length == 0 ? 1 : 0;
+}
+
+try
+{
+    return args[0].ToLowerInvariant() switch
+    {
+        "convert" => ConvertCommand.Run(args.Skip(1).ToArray()),
+        "dump" => Dump(args.Skip(1).ToArray()),
+        "info" => Info(args.Skip(1).ToArray()),
+        "roundtrip" => RoundTrip(args.Skip(1).ToArray()),
+        _ => Info(args)
+    };
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"error: {ex.Message}");
     return 1;
 }
 
-return args[0].ToLowerInvariant() switch
+static void Usage()
 {
-    "dump" => Dump(args.Skip(1).ToArray()),
-    "info" => Info(args.Skip(1).ToArray()),
-    "replace" => Replace(args.Skip(1).ToArray()),
-    "roundtrip" => RoundTrip(args.Skip(1).ToArray()),
-    _ => Info(args)          // bare file paths keep working
-};
+    Console.WriteLine("""
+        TxtgSharp CLI - read, inspect and write TexToGo (.txtg) containers.
+
+        Usage:
+          txtg-cli info <file.txtg> [more.txtg ...]
+          txtg-cli dump <file.txtg> <out_dir> [layer ...]   decode ASTC mip 0 to PNG
+          txtg-cli convert <image> <out.txtg> [options]     encode an image into a container
+          txtg-cli convert <images...> --out <dir> [...]    a batch, each named after its source
+          txtg-cli roundtrip <file.txtg> [...] [--reswizzle]
+
+        Run 'txtg-cli convert --help' for the conversion options.
+        """);
+}
 
 static int Info(string[] files)
 {
@@ -35,7 +55,7 @@ static int Info(string[] files)
             TxtgBlockInfo block = txtg.BlockInfo;
 
             Console.WriteLine($"  {txtg.Width}x{txtg.Height}, {txtg.LayerCount} layers, {txtg.MipCount} mips");
-            Console.WriteLine($"  format {txtg.Format} (0x{txtg.RawFormatCode:X4}), " +
+            Console.WriteLine($"  format {txtg.FormatName} (0x{txtg.RawFormatCode:X4}, {txtg.Format}), " +
                               $"block {block.Width}x{block.Height}, {block.BytesPerBlock} bytes");
             Console.WriteLine($"  surfaces parsed: {txtg.Surfaces.Count} of {txtg.LayerCount * txtg.MipCount}");
 
@@ -93,7 +113,7 @@ static int Dump(string[] args)
     LdrDecodeMode mode = txtg.Format.IsSrgb() ? LdrDecodeMode.Srgb : LdrDecodeMode.Linear;
     string stem = Path.GetFileNameWithoutExtension(path);
 
-    Console.WriteLine($"{stem}: {txtg.Format}, decoding mip 0 of {layers.Length} layer(s)");
+    Console.WriteLine($"{stem}: {txtg.FormatName}, decoding mip 0 of {layers.Length} layer(s)");
 
     foreach (int layer in layers)
     {
@@ -104,7 +124,11 @@ static int Dump(string[] args)
             continue;
         }
 
-        byte[] rgba = DecodeAstc(surface.Data, surface.Width, surface.Height, footprint, mode);
+        using MemoryStream source = new(surface.Data);
+        using MemoryStream destination = new();
+        AstcDecoder.DecompressImage(source, destination, surface.Width, surface.Height, footprint, mode);
+
+        byte[] rgba = destination.ToArray();
         string outPath = Path.Combine(outDir, $"{stem}_layer{layer:D3}.png");
         PngWriter.WriteRgba(outPath, rgba, surface.Width, surface.Height);
 
@@ -116,69 +140,6 @@ static int Dump(string[] args)
     return 0;
 }
 
-// Encodes a PNG into an existing container, which keeps every header field the game reads and
-// this library cannot derive. The whole mip chain of the layer is rebuilt, so the texture stays
-// consistent at distance rather than only at mip 0.
-static int Replace(string[] args)
-{
-    if (args.Length < 3)
-    {
-        Console.WriteLine("Usage: TxtgSharp.Cli replace <file.txtg> <image.png> <out.txtg> [layer]");
-        return 1;
-    }
-
-    string path = args[0], imagePath = args[1], outPath = args[2];
-    int layer = args.Length > 3 ? int.Parse(args[3]) : 0;
-
-    TxtgFile txtg = TxtgFile.FromFile(path);
-    if (!txtg.Format.IsAstc())
-    {
-        Console.WriteLine($"{txtg.Format} is not ASTC; only ASTC encoding is wired up here. " +
-                          "Set TxtgSurface.Data directly to inject pre-encoded blocks.");
-        return 1;
-    }
-
-    var (rgba, width, height) = PngReader.ReadRgba(imagePath);
-    if (width != txtg.Width || height != txtg.Height)
-    {
-        Console.WriteLine($"{Path.GetFileName(imagePath)} is {width}x{height}, " +
-                          $"container is {txtg.Width}x{txtg.Height}. Resize it first.");
-        return 1;
-    }
-
-    Footprint footprint = FootprintOf(txtg.BlockInfo);
-    Console.WriteLine($"{Path.GetFileName(path)}: encoding {width}x{height} as {txtg.Format} " +
-                      $"({footprint.Width}x{footprint.Height} blocks) into layer {layer}");
-
-    int replaced = 0;
-    for (int mip = 0; mip < txtg.MipCount; mip++)
-    {
-        TxtgSurface? surface = txtg.Surface(layer, mip);
-        if (surface is null) continue;
-
-        byte[] level = mip == 0 ? rgba : Downsample(rgba, width, height, mip);
-        byte[] blocks = EncodeAstc(level, surface.Width, surface.Height, footprint);
-
-        // The encoder pads out to whole blocks, which is also what the container stores.
-        if (blocks.Length != surface.DataLength)
-            throw new InvalidDataException(
-                $"Encoder produced {blocks.Length} bytes for mip {mip}, container wants {surface.DataLength}.");
-
-        surface.Data = blocks;
-        replaced++;
-        Console.WriteLine($"  mip {mip}: {surface.Width}x{surface.Height} -> {blocks.Length:N0} bytes");
-    }
-
-    txtg.Save(outPath);
-    Console.WriteLine($"  {replaced} surface(s) replaced -> {Path.GetFileName(outPath)} " +
-                      $"({new FileInfo(outPath).Length:N0} bytes)");
-    return 0;
-}
-
-// Writing back a container nobody touched has to reproduce it exactly; anything else means the
-// writer is losing something the game might read. With --reswizzle every surface is marked
-// modified first, which drops the verbatim-payload shortcut and puts the swizzler itself under
-// test: deswizzle then swizzle has to land on the bytes the container shipped.
 static int RoundTrip(string[] args)
 {
     bool reswizzle = args.Contains("--reswizzle");
@@ -233,22 +194,6 @@ static int RoundTrip(string[] args)
     return failures == 0 ? 0 : 2;
 }
 
-static byte[] DecodeAstc(byte[] blocks, int width, int height, Footprint footprint, LdrDecodeMode mode)
-{
-    using MemoryStream source = new(blocks);
-    using MemoryStream destination = new();
-    AstcDecoder.DecompressImage(source, destination, width, height, footprint, mode);
-    return destination.ToArray();
-}
-
-static byte[] EncodeAstc(byte[] rgba, int width, int height, Footprint footprint)
-{
-    using MemoryStream source = new(rgba);
-    using MemoryStream destination = new();
-    AstcEncoder.CompressImage(source, destination, width, height, footprint);
-    return destination.ToArray();
-}
-
 static Footprint FootprintOf(TxtgBlockInfo block) => (block.Width, block.Height) switch
 {
     (4, 4) => Footprint.FromFootprintType(FootprintType.Footprint4x4),
@@ -268,53 +213,6 @@ static Footprint FootprintOf(TxtgBlockInfo block) => (block.Width, block.Height)
     _ => throw new NotSupportedException($"No ASTC footprint for {block.Width}x{block.Height} blocks.")
 };
 
-// Box filter, halving per level. Averaging happens in whatever space the texture stores, which
-// is close enough for a mip tail and keeps a normal or roughness map out of a gamma curve it
-// was never in.
-static byte[] Downsample(byte[] rgba, int width, int height, int levels)
-{
-    byte[] current = rgba;
-    int currentWidth = width, currentHeight = height;
-
-    for (int level = 0; level < levels; level++)
-    {
-        int nextWidth = Math.Max(1, currentWidth >> 1);
-        int nextHeight = Math.Max(1, currentHeight >> 1);
-        byte[] next = new byte[nextWidth * nextHeight * 4];
-
-        for (int y = 0; y < nextHeight; y++)
-        {
-            int y0 = Math.Min(y * 2, currentHeight - 1);
-            int y1 = Math.Min(y0 + 1, currentHeight - 1);
-
-            for (int x = 0; x < nextWidth; x++)
-            {
-                int x0 = Math.Min(x * 2, currentWidth - 1);
-                int x1 = Math.Min(x0 + 1, currentWidth - 1);
-
-                int a = (y0 * currentWidth + x0) * 4, b = (y0 * currentWidth + x1) * 4;
-                int c = (y1 * currentWidth + x0) * 4, d = (y1 * currentWidth + x1) * 4;
-                int destination = (y * nextWidth + x) * 4;
-
-                for (int channel = 0; channel < 4; channel++)
-                {
-                    next[destination + channel] = (byte)((current[a + channel] + current[b + channel] +
-                                                          current[c + channel] + current[d + channel] + 2) / 4);
-                }
-            }
-        }
-
-        current = next;
-        currentWidth = nextWidth;
-        currentHeight = nextHeight;
-    }
-
-    return current;
-}
-
-// Per-channel statistics say what a texture actually holds without trusting any shader:
-// a two-channel tangent normal sits near 0.5 in R and G with x^2+y^2 <= 1, whereas an
-// occlusion or roughness channel has its own distribution entirely.
 static string ChannelStats(byte[] rgba)
 {
     double[] sum = new double[4];

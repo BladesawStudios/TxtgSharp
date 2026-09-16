@@ -51,3 +51,8 @@ Makefile
 
 # VS Code
 .vscode/
+
+# Local verification harness: deliberately outside the solution and out of the repo.
+# It needs a TotK romfs dump to say anything, so it cannot run in CI and is not a
+# build dependency of the library or the CLI.
+/tests/

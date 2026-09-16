@@ -2,10 +2,6 @@ using System.IO.Compression;
 
 namespace TxtgSharp.Cli;
 
-/// <summary>
-/// Minimal RGBA8 PNG encoder. Hand-rolled so the verification tool needs no imaging
-/// dependency - PNG is just zlib-compressed scanlines wrapped in CRC'd chunks.
-/// </summary>
 internal static class PngWriter
 {
     private static readonly byte[] Signature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
@@ -21,14 +17,13 @@ internal static class PngWriter
         Span<byte> ihdr = stackalloc byte[13];
         WriteBigEndian(ihdr, width);
         WriteBigEndian(ihdr[4..], height);
-        ihdr[8] = 8;    // bit depth
-        ihdr[9] = 6;    // colour type: RGBA
-        ihdr[10] = 0;   // deflate
-        ihdr[11] = 0;   // adaptive filtering
-        ihdr[12] = 0;   // no interlace
+        ihdr[8] = 8;
+        ihdr[9] = 6;
+        ihdr[10] = 0;
+        ihdr[11] = 0;
+        ihdr[12] = 0;
         WriteChunk(file, "IHDR"u8, ihdr);
 
-        // Each scanline is prefixed with its filter type; 0 means "none".
         byte[] raw = new byte[height * (1 + width * 4)];
         int stride = width * 4;
         for (int y = 0; y < height; y++)
