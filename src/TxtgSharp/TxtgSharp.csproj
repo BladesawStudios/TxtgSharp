@@ -6,8 +6,8 @@
     <Nullable>enable</Nullable>
     <RootNamespace>TxtgSharp</RootNamespace>
     <AssemblyName>TxtgSharp</AssemblyName>
-    <Version>0.1.0</Version>
-    <Description>Reader for the Tears of the Kingdom TexToGo (.txtg) texture container.</Description>
+    <Version>0.2.0</Version>
+    <Description>Reader and writer for the Tears of the Kingdom TexToGo (.txtg) texture container.</Description>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
   </PropertyGroup>
 
