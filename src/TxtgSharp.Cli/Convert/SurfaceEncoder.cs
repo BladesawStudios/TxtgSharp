@@ -7,8 +7,42 @@ using BCnEncoder.Shared;
 using CommunityToolkit.HighPerformance;
 namespace TxtgSharp.Cli;
 
+internal enum AlphaKind
+{
+    Opaque,
+    Binary,
+    Smooth
+}
+
 internal static class SurfaceEncoder
 {
+    public static AlphaKind AlphaOf(byte[] rgba)
+    {
+        bool anyTransparent = false;
+
+        for (int i = 3; i < rgba.Length; i += 4)
+        {
+            if (rgba[i] == 255) continue;
+            if (rgba[i] != 0) return AlphaKind.Smooth;
+            anyTransparent = true;
+        }
+
+        return anyTransparent ? AlphaKind.Binary : AlphaKind.Opaque;
+    }
+
+    // BC1 stores one bit of alpha per texel, picked per block, and costs nothing extra to use.
+    public static AlphaKind AlphaCapacityOf(TargetFormat target) => target.Encoder switch
+    {
+        EncoderKind.Raw => target.Block.BytesPerBlock == 4 ? AlphaKind.Smooth : AlphaKind.Opaque,
+        EncoderKind.Astc => AlphaKind.Smooth,
+        _ => target.Bcn switch
+        {
+            CompressionFormat.Bc1 or CompressionFormat.Bc1WithAlpha => AlphaKind.Binary,
+            CompressionFormat.Bc4 or CompressionFormat.Bc5 => AlphaKind.Opaque,
+            _ => AlphaKind.Smooth
+        }
+    };
+
     public static byte[] Encode(
         byte[] rgba, int width, int height, TargetFormat target, CompressionQuality quality,
         bool encoderMayParallelise = true)
@@ -70,7 +104,14 @@ internal static class SurfaceEncoder
         bool mayParallelise)
     {
         BcEncoder encoder = new();
-        encoder.OutputOptions.Format = target.Bcn;
+
+        // Plain Bc1 throws alpha away; the alpha variant is the same 8 bytes a block, so it is
+        // only ever the right choice once the source has something to keep.
+        encoder.OutputOptions.Format =
+            target.Bcn == CompressionFormat.Bc1 && AlphaOf(rgba) != AlphaKind.Opaque
+                ? CompressionFormat.Bc1WithAlpha
+                : target.Bcn;
+
         encoder.OutputOptions.Quality = quality;
 
         encoder.Options.IsParallel = mayParallelise;

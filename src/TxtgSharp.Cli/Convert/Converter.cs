@@ -3,7 +3,8 @@ namespace TxtgSharp.Cli;
 internal sealed record ConversionJob(string InputPath, string OutputPath, string? TemplatePath);
 
 internal sealed record ConversionResult(
-    ConversionJob Job, int Width, int Height, string Format, int Mips, int Copied, long Bytes)
+    ConversionJob Job, int Width, int Height, string Format, int Mips, int Copied, long Bytes,
+    string? Warning = null)
 {
     public string Summary =>
         $"{Width}x{Height} {Format}, {Mips} mip(s)" +
@@ -93,7 +94,8 @@ internal static class Converter
         output.Save(job.OutputPath, options.CompressionLevel);
 
         return new ConversionResult(
-            job, source.Width, source.Height, target.Name, mips, copied, new FileInfo(job.OutputPath).Length);
+            job, source.Width, source.Height, target.Name, mips, copied, new FileInfo(job.OutputPath).Length,
+            AlphaWarning(source, target, copied == mips));
     }
 
     private static ConversionResult ReplaceLayer(
@@ -133,7 +135,20 @@ internal static class Converter
         template.Save(job.OutputPath, options.CompressionLevel);
 
         return new ConversionResult(job, template.Width, template.Height, $"{target.Name} layer {layer}",
-            replaced, 0, new FileInfo(job.OutputPath).Length);
+            replaced, 0, new FileInfo(job.OutputPath).Length, AlphaWarning(source, target, false));
+    }
+
+    private static string? AlphaWarning(ImageSource source, TargetFormat target, bool copiedThrough)
+    {
+        if (copiedThrough) return null;
+
+        AlphaKind has = SurfaceEncoder.AlphaOf(source.Rgba(0, target.Srgb));
+        AlphaKind holds = SurfaceEncoder.AlphaCapacityOf(target);
+        if (has <= holds) return null;
+
+        return has == AlphaKind.Smooth && holds == AlphaKind.Binary
+            ? $"source has soft alpha but {target.Name} stores one bit per texel, so edges become hard"
+            : $"source has alpha but {target.Name} stores none, so it is dropped";
     }
 
     public static TargetFormat ResolveTarget(Options options, TxtgFile? template)

@@ -393,7 +393,8 @@ public sealed class TxtgFile
         header[0x1B] = 3;
 
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(0x3E), 768);
-        BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0x40), 0x42900000);
+        // A float. 70 in 16,520 containers, 50 in 10,951, -1 in 1,607.
+        BinaryPrimitives.WriteSingleLittleEndian(header.AsSpan(0x40), 70f);
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0x48), 0x02000200);
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0x4C), 0x00010502);
     }

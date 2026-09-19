@@ -50,6 +50,9 @@ internal static class ConvertCommand
         ConversionResult result = Converter.Run(job, options, Console.WriteLine);
 
         Console.WriteLine($"wrote {Path.GetFileName(job.OutputPath)} ({result.Summary})");
+        if (result.Warning is not null)
+            Console.WriteLine($"warning: {result.Warning}");
+
         WarnAboutMissingTemplate(job.TemplatePath is null);
         return 0;
     }
@@ -71,7 +74,8 @@ internal static class ConvertCommand
             {
                 ConversionResult result = Converter.Run(job, options);
                 done.Enqueue(result);
-                line = $"-> {Path.GetFileName(job.OutputPath)}  ({result.Summary})";
+                line = $"-> {Path.GetFileName(job.OutputPath)}  ({result.Summary})" +
+                       (result.Warning is null ? "" : $"  [{result.Warning}]");
             }
             catch (Exception ex)
             {
@@ -99,6 +103,15 @@ internal static class ConvertCommand
             Console.WriteLine($"{failures.Count} failed:");
             foreach ((string input, string message) in failures.OrderBy(f => f.Input, StringComparer.OrdinalIgnoreCase))
                 Console.WriteLine($"  {Path.GetFileName(input)}: {message}");
+        }
+
+        var warned = done.Where(r => r.Warning is not null).ToList();
+        if (warned.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"{warned.Count} with an alpha warning:");
+            foreach (ConversionResult r in warned.OrderBy(r => r.Job.InputPath, StringComparer.OrdinalIgnoreCase))
+                Console.WriteLine($"  {Path.GetFileName(r.Job.InputPath)}: {r.Warning}");
         }
 
         WarnAboutMissingTemplate(jobs.All(j => j.TemplatePath is null));
