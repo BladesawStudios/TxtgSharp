@@ -112,6 +112,36 @@ public static class TxtgFormats
         return mapped is not null;
     }
 
+    /// <summary>
+    /// The TXTG format and block footprint for a TexSharp format, or false if TXTG can't hold it. Every ASTC
+    /// footprint is carried by the 8x8 format with its footprint in the block, as the game's own files do.
+    /// Colour space only matters where TXTG has a separate sRGB format; BC3 has only the sRGB one.
+    /// </summary>
+    public static bool TryFromTextureFormat(TextureFormat texture, bool srgb, out TxtgFormat format, out TxtgBlockInfo block)
+    {
+        TxtgFormat? mapped = texture switch
+        {
+            TextureFormat.Bc1 => srgb ? TxtgFormat.Bc1UnormSrgb : TxtgFormat.Bc1Unorm,
+            TextureFormat.Bc3 => TxtgFormat.Bc3UnormSrgb,
+            TextureFormat.Bc4 => TxtgFormat.Bc4Unorm,
+            TextureFormat.Bc5 => TxtgFormat.Bc5Unorm,
+            TextureFormat.Bc7 => TxtgFormat.Bc7Unorm,
+            TextureFormat.R8 => TxtgFormat.R8Unorm,
+            TextureFormat.RG8 => TxtgFormat.R8G8Unorm,
+            TextureFormat.Rgba8 => TxtgFormat.R8G8B8A8Unorm,
+            _ when texture.IsAstc() => srgb ? TxtgFormat.Astc8x8Srgb : TxtgFormat.Astc8x8Unorm,
+            _ => null,
+        };
+
+        format = mapped ?? TxtgFormat.Unknown;
+        block = mapped is null
+            ? default
+            : texture.IsAstc()
+                ? new TxtgBlockInfo(texture.BlockWidth(), texture.BlockHeight(), 16)
+                : mapped.Value.BlockInfo();
+        return mapped is not null;
+    }
+
     public static bool IsAstc(this TxtgFormat format) => format is
         TxtgFormat.Astc4x4Srgb or TxtgFormat.Astc4x4Unorm or TxtgFormat.Astc8x5Unorm or
         TxtgFormat.Astc8x8Unorm or TxtgFormat.Astc8x8Srgb;

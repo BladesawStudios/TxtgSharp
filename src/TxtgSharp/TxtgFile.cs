@@ -302,18 +302,18 @@ public sealed class TxtgFile
 
     public static TxtgFile CreateFrom(
         TxtgFile template, int width, int height, TxtgFormat format, IReadOnlyList<TxtgSurfaceData> surfaces,
-        TxtgBlockInfo? blockInfo = null)
+        TxtgBlockInfo? blockInfo = null, int? rawFormatCode = null)
     {
         ArgumentNullException.ThrowIfNull(template);
         if (template._header.Length != HeaderSize)
             throw new ArgumentException("Template has no header to borrow.", nameof(template));
 
-        return Build(template._header, width, height, format, surfaces, blockInfo);
+        return Build(template._header, width, height, format, surfaces, blockInfo, rawFormatCode);
     }
 
     private static TxtgFile Build(
         byte[]? templateHeader, int width, int height, TxtgFormat format,
-        IReadOnlyList<TxtgSurfaceData> surfaces, TxtgBlockInfo? blockInfo)
+        IReadOnlyList<TxtgSurfaceData> surfaces, TxtgBlockInfo? blockInfo, int? rawFormatCode = null)
     {
         ArgumentNullException.ThrowIfNull(surfaces);
         if (surfaces.Count == 0)
@@ -343,7 +343,7 @@ public sealed class TxtgFile
             built.Add(surface);
         }
 
-        int rawCode = format.ToRawCode();
+        int rawCode = rawFormatCode ?? format.ToRawCode();
 
         return new TxtgFile
         {
