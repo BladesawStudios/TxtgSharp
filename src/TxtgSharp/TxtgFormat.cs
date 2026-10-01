@@ -1,3 +1,5 @@
+using TexSharp;
+
 namespace TxtgSharp;
 public enum TxtgFormat
 {
@@ -84,6 +86,31 @@ public static class TxtgFormats
 
     public static uint ToSetting2(int blockWidth, int blockHeight) =>
         0x7F00u | (uint)(blockWidth - 1) << 4 | (uint)(blockHeight - 1);
+
+    /// <summary>
+    /// The TexSharp format for a TXTG format. ASTC takes its footprint from <paramref name="block"/>, not from
+    /// the format, because a file's footprint is in its header and often differs from the format's name.
+    /// </summary>
+    public static bool TryGetTextureFormat(this TxtgFormat format, TxtgBlockInfo block, out TextureFormat texture, out bool srgb)
+    {
+        srgb = format.IsSrgb();
+        TextureFormat? mapped = format switch
+        {
+            TxtgFormat.Bc1Unorm or TxtgFormat.Bc1UnormSrgb => TextureFormat.Bc1,
+            TxtgFormat.Bc3UnormSrgb => TextureFormat.Bc3,
+            TxtgFormat.Bc4Unorm => TextureFormat.Bc4,
+            TxtgFormat.Bc5Unorm => TextureFormat.Bc5,
+            TxtgFormat.Bc7Unorm => TextureFormat.Bc7,
+            TxtgFormat.R8Unorm => TextureFormat.R8,
+            TxtgFormat.R8G8Unorm => TextureFormat.RG8,
+            TxtgFormat.R8G8B8A8Unorm => TextureFormat.Rgba8,
+            _ when format.IsAstc() => TextureFormats.AstcFromFootprint(block.Width, block.Height),
+            _ => null,
+        };
+
+        texture = mapped ?? default;
+        return mapped is not null;
+    }
 
     public static bool IsAstc(this TxtgFormat format) => format is
         TxtgFormat.Astc4x4Srgb or TxtgFormat.Astc4x4Unorm or TxtgFormat.Astc8x5Unorm or

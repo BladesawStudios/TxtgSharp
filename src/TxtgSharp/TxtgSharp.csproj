@@ -6,13 +6,17 @@
     <Nullable>enable</Nullable>
     <RootNamespace>TxtgSharp</RootNamespace>
     <AssemblyName>TxtgSharp</AssemblyName>
-    <Version>0.3.0</Version>
+    <Version>0.4.0</Version>
     <Description>Reader and writer for the Tears of the Kingdom TexToGo (.txtg) texture container.</Description>
     <PackageLicenseExpression>AGPL-3.0-or-later</PackageLicenseExpression>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="ZstdSharp.Port" Version="0.8.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\lib\TexSharp\src\TexSharp\TexSharp.csproj" />
   </ItemGroup>
 
 </Project>
