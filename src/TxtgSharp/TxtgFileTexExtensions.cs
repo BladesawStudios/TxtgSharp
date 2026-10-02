@@ -18,6 +18,33 @@ public static class TxtgFileTexExtensions
         return TextureDecoder.ToRgba8(format, surface.Data, surface.Width, surface.Height);
     }
 
+    /// <summary>The channel swizzle stored in the header, which says how the texture's channels are meant to be read.</summary>
+    public static ChannelMap GetChannelMap(this TxtgFile file)
+    {
+        var (red, green, blue, alpha) = file.ChannelSelectors;
+        return ChannelMap.FromTxtg(red, green, blue, alpha);
+    }
+
+    /// <summary>
+    /// <see cref="ToRgba8"/> as the texture is meant to be seen: its channel swizzle applied, and for a BC5 normal map
+    /// the blue channel rebuilt.
+    /// </summary>
+    public static byte[] Render(this TxtgFile file, int layer = 0, int mip = 0)
+    {
+        TextureFormat format = RequireFormat(file, out _);
+        TxtgSurface surface = file.Surface(layer, mip)
+            ?? throw new ArgumentOutOfRangeException(nameof(mip), $"No surface for layer {layer} mip {mip}.");
+        return TextureDecoder.Render(format, surface.Data, surface.Width, surface.Height, file.GetChannelMap());
+    }
+
+    /// <summary>A PNG of <see cref="Render"/>.</summary>
+    public static byte[] ToPng(this TxtgFile file, int layer = 0, int mip = 0)
+    {
+        TxtgSurface surface = file.Surface(layer, mip)
+            ?? throw new ArgumentOutOfRangeException(nameof(mip), $"No surface for layer {layer} mip {mip}.");
+        return PngWriter.Encode(file.Render(layer, mip), surface.Width, surface.Height);
+    }
+
     /// <summary>
     /// All mips of one layer as a DDS. The pixel data is passed through untouched, except with
     /// <paramref name="editable"/>: R8 and RG8 are then expanded to RGBA8, which image editors can open.

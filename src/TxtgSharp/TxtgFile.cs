@@ -5,13 +5,15 @@ namespace TxtgSharp;
 public sealed class TxtgSurface
 {
     private readonly TxtgBlockInfo _block;
+    private readonly int _baseHeight;
     private byte[]? _source;
     private byte[]? _encoded;
     private byte[]? _swizzled;
     private byte[]? _data;
 
-    internal TxtgSurface(int arrayIndex, int mipLevel, int width, int height, TxtgBlockInfo block)
+    internal TxtgSurface(int arrayIndex, int mipLevel, int width, int height, int baseHeight, TxtgBlockInfo block)
     {
+        _baseHeight = baseHeight;
         ArrayIndex = arrayIndex;
         MipLevel = mipLevel;
         Width = width;
@@ -32,7 +34,7 @@ public sealed class TxtgSurface
 
     internal const uint DefaultFlags = 6;
 
-    public int DataLength => TxtgSwizzle.LinearSize(Width, Height, _block);
+    public int DataLength => TxtgSwizzle.LinearSize(Width, Height, _baseHeight, _block);
 
     public bool IsModified { get; private set; }
 
@@ -44,7 +46,7 @@ public sealed class TxtgSurface
             if (data is not null)
                 return data;
 
-            data = TxtgSwizzle.Deswizzle(Swizzled(), Width, Height, _block);
+            data = TxtgSwizzle.Deswizzle(Swizzled(), Width, Height, _baseHeight, _block);
             byte[]? won = Interlocked.CompareExchange(ref _data, data, null);
             if (won is not null)
                 return won;
@@ -91,10 +93,10 @@ public sealed class TxtgSurface
 
         byte[] data = _data!;
 
-        int size = SwizzledSize > 0 ? SwizzledSize : TxtgSwizzle.SwizzledSize(Width, Height, _block);
+        int size = SwizzledSize > 0 ? SwizzledSize : TxtgSwizzle.SwizzledSize(Width, Height, _baseHeight, _block);
 
         byte[]? seed = _source is null ? null : TxtgFile.Decompress(_source, SwizzledSize);
-        return _swizzled = TxtgSwizzle.Swizzle(data, Width, Height, _block, size, seed);
+        return _swizzled = TxtgSwizzle.Swizzle(data, Width, Height, _baseHeight, _block, size, seed);
     }
 
     internal byte[] Compressed(ZstdSharp.Compressor compressor)
@@ -133,6 +135,13 @@ public sealed class TxtgFile
     public TxtgBlockInfo BlockInfo { get; private init; }
 
     public IReadOnlyList<TxtgSurface> Surfaces { get; private init; } = [];
+
+    /// <summary>
+    /// The four component selectors from the header, for red, green, blue and alpha: 0 to 3 pick R, G, B or A, 4 is
+    /// zero and 5 is one. A file made without a template has the identity, 0 1 2 3.
+    /// </summary>
+    public (byte Red, byte Green, byte Blue, byte Alpha) ChannelSelectors
+        => _header.Length == HeaderSize ? (_header[0x18], _header[0x19], _header[0x1A], _header[0x1B]) : ((byte)0, (byte)1, (byte)2, (byte)3);
 
     public string FormatName
     {
@@ -220,7 +229,7 @@ public sealed class TxtgFile
             ReadOnlySpan<byte> frame = data.Slice(cursor, compressedSize);
             cursor += compressedSize;
 
-            TxtgSurface surface = new(layer, mip, mipWidth, mipHeight, block)
+            TxtgSurface surface = new(layer, mip, mipWidth, mipHeight, height, block)
             {
                 IndexEntry = entries[i],
                 Flags = flags[i]
@@ -334,7 +343,7 @@ public sealed class TxtgFile
             int mipWidth = Math.Max(1, width >> source.MipLevel);
             int mipHeight = Math.Max(1, height >> source.MipLevel);
 
-            TxtgSurface surface = new(source.ArrayIndex, source.MipLevel, mipWidth, mipHeight, block)
+            TxtgSurface surface = new(source.ArrayIndex, source.MipLevel, mipWidth, mipHeight, height, block)
             {
                 IndexEntry = (uint)source.ArrayIndex | (uint)source.MipLevel << 16 | 1u << 24,
                 Flags = TxtgSurface.DefaultFlags,

@@ -8,7 +8,9 @@ With [TexSharp](../TexSharp), a container can be decoded or handed to an image e
 ```csharp
 TxtgFile txtg = TxtgFile.FromFile("texture.txtg");
 
-byte[] rgba = txtg.ToRgba8();                        // layer 0, mip 0
+byte[] rgba = txtg.ToRgba8();                        // layer 0, mip 0, channels as stored
+byte[] seen = txtg.Render();                         // with the file's channel swizzle applied
+File.WriteAllBytes("texture.png", txtg.ToPng());
 File.WriteAllBytes("texture.dds", txtg.ToDds().ToBytes());
 
 TxtgFile edited = txtg.WithDds(DdsImage.Parse(File.ReadAllBytes("texture.dds")));

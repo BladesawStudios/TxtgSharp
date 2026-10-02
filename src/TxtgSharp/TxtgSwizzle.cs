@@ -8,13 +8,15 @@ internal static class TxtgSwizzle
 {
     internal readonly struct Geometry
     {
-        public Geometry(int width, int height, TxtgBlockInfo block)
+        public Geometry(int width, int height, int baseHeight, TxtgBlockInfo block)
         {
             WidthInBlocks = Math.Max(1, DivRoundUp(width, block.Width));
             HeightInBlocks = Math.Max(1, DivRoundUp(height, block.Height));
             RowBytes = WidthInBlocks * block.BytesPerBlock;
 
-            BlockHeight = Math.Clamp(PowerOfTwoAtLeast(DivRoundUp(HeightInBlocks, 8)), 1, 16);
+            // The Switch picks one block height from the top mip's height and shrinks it for the smaller mips.
+            int baseHeightInBlocks = Math.Max(1, DivRoundUp(baseHeight, block.Height));
+            BlockHeight = Math.Min(BlockHeightMip0(baseHeightInBlocks), Math.Clamp(PowerOfTwoAtLeast(DivRoundUp(HeightInBlocks, 8)), 1, 16));
             BlockRows = 8 * BlockHeight;
             GobsPerRow = DivRoundUp(RowBytes, 64);
             GobColumnBytes = 512 * BlockHeight;
@@ -49,24 +51,36 @@ internal static class TxtgSwizzle
         public int SwizzledSize { get; }
     }
 
-    internal static int LinearSize(int width, int height, TxtgBlockInfo block) =>
-        new Geometry(width, height, block).LinearSize;
-
-    internal static int SwizzledSize(int width, int height, TxtgBlockInfo block) =>
-        new Geometry(width, height, block).SwizzledSize;
-
-    internal static byte[] Deswizzle(byte[] swizzled, int width, int height, TxtgBlockInfo block)
+    /// <summary>
+    /// The block height, in GOBs, for a surface of this many rows of blocks: the Tegra X1 rule, thresholds on the
+    /// height plus half again. Rounding the height up to a power of two instead gives the wrong layout for heights
+    /// such as 42 blocks.
+    /// </summary>
+    internal static int BlockHeightMip0(int heightInBlocks)
     {
-        Geometry geometry = new(width, height, block);
+        int heightAndHalf = heightInBlocks + heightInBlocks / 2;
+        return heightAndHalf >= 128 ? 16 : heightAndHalf >= 64 ? 8 : heightAndHalf >= 32 ? 4 : heightAndHalf >= 16 ? 2 : 1;
+    }
+
+    // baseHeight is the height of the texture's top mip, which every mip's block height derives from.
+    internal static int LinearSize(int width, int height, int baseHeight, TxtgBlockInfo block) =>
+        new Geometry(width, height, baseHeight, block).LinearSize;
+
+    internal static int SwizzledSize(int width, int height, int baseHeight, TxtgBlockInfo block) =>
+        new Geometry(width, height, baseHeight, block).SwizzledSize;
+
+    internal static byte[] Deswizzle(byte[] swizzled, int width, int height, int baseHeight, TxtgBlockInfo block)
+    {
+        Geometry geometry = new(width, height, baseHeight, block);
         byte[] linear = new byte[geometry.LinearSize];
         Transfer(swizzled, linear, geometry, toLinear: true);
         return linear;
     }
 
     internal static byte[] Swizzle(
-        byte[] linear, int width, int height, TxtgBlockInfo block, int swizzledSize = 0, byte[]? seed = null)
+        byte[] linear, int width, int height, int baseHeight, TxtgBlockInfo block, int swizzledSize = 0, byte[]? seed = null)
     {
-        Geometry geometry = new(width, height, block);
+        Geometry geometry = new(width, height, baseHeight, block);
         if (linear.Length < geometry.LinearSize)
             throw new ArgumentException(
                 $"Need {geometry.LinearSize} bytes for a {width}x{height} surface, got {linear.Length}.",
