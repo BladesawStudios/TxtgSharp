@@ -1,6 +1,13 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <!-- The TexSharp project to build against. Beside this library (as in a checkout of all of them) the shared copy is used,
+         so a program that uses several of these libraries gets one TexSharp; on its own the embedded copy is. Set TexSharpProject to choose. -->
+    <TexSharpProject Condition="'$(TexSharpProject)' == '' and Exists('$(MSBuildThisFileDirectory)..\..\..\TexSharp\src\TexSharp\TexSharp.csproj')">$(MSBuildThisFileDirectory)..\..\..\TexSharp\src\TexSharp\TexSharp.csproj</TexSharpProject>
+    <TexSharpProject Condition="'$(TexSharpProject)' == ''">$(MSBuildThisFileDirectory)..\..\lib\TexSharp\src\TexSharp\TexSharp.csproj</TexSharpProject>
+  </PropertyGroup>
+
+  <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -16,7 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\lib\TexSharp\src\TexSharp\TexSharp.csproj" />
+    <ProjectReference Include="$(TexSharpProject)" />
   </ItemGroup>
 
 </Project>

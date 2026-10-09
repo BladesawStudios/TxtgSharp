@@ -112,6 +112,50 @@ public static class TxtgFileTexExtensions
         return TxtgFile.CreateFrom(file, dds.Width, dds.Height, format, surfaces, block, rawCode);
     }
 
+    /// <summary>
+    /// Replaces one layer of the file with a DDS, in place, leaving the other layers as they are. Every layer shares the
+    /// file's size, format and mip count. A DDS that differs in any of them is converted to fit (resized, its mips
+    /// rebuilt, re-encoded) unless <paramref name="convert"/> is false, in which case it is refused. An RGBA8 DDS is
+    /// accepted for the small formats <c>ToDds(editable: true)</c> expands without counting as a conversion.
+    /// Returns what was changed to make the DDS fit, in words; empty if it fitted as it was.
+    /// </summary>
+    public static IReadOnlyList<string> ReplaceLayerFromDds(this TxtgFile file, DdsImage dds, int layer, bool convert = true)
+    {
+        ArgumentNullException.ThrowIfNull(dds);
+        TextureFormat current = RequireFormat(file, out bool srgb);
+
+        int layers = Math.Max(1, file.LayerCount);
+        if (layer < 0 || layer >= layers)
+            throw new ArgumentOutOfRangeException(nameof(layer), layer, $"The file has {layers} layer(s).");
+
+        if (dds.Format == TextureFormat.Rgba8 && current != TextureFormat.Rgba8 && PixelFormats.CanRoundTripThroughRgba8(current)
+            && dds.Width == file.Width && dds.Height == file.Height && dds.Mips.Count == file.MipCount)
+        {
+            var collapsed = new List<byte[]>();
+            for (int mip = 0; mip < dds.Mips.Count; mip++)
+                collapsed.Add(PixelFormats.CollapseRgba8(current, dds.Mips[mip], Math.Max(1, dds.Width >> mip) * Math.Max(1, dds.Height >> mip)));
+            dds = new DdsImage(dds.Width, dds.Height, current, collapsed);
+        }
+
+        List<string> changes = TextureConverter.Differences(dds, current, file.Width, file.Height, file.MipCount);
+        IReadOnlyList<byte[]> mips = dds.Mips;
+        if (changes.Count > 0)
+        {
+            if (!convert)
+                throw new ArgumentException(
+                    $"A layer has to match the file: it is {file.Width}x{file.Height} {current} with {file.MipCount} mip(s), " +
+                    $"but the DDS is {dds.Width}x{dds.Height} {dds.Format} with {dds.Mips.Count}.", nameof(dds));
+            mips = TextureConverter.Convert(dds, current, file.Width, file.Height, file.MipCount, srgb);
+        }
+
+        for (int mip = 0; mip < mips.Count; mip++)
+        {
+            TxtgSurface surface = file.Surface(layer, mip) ?? throw new InvalidDataException($"Layer {layer} is missing mip {mip}.");
+            surface.Data = mips[mip];
+        }
+        return changes;
+    }
+
     private static TextureFormat RequireFormat(TxtgFile file, out bool srgb)
         => file.TryGetTextureFormat(out TextureFormat format, out srgb)
             ? format
