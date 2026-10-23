@@ -137,11 +137,21 @@ public sealed class TxtgFile
     public IReadOnlyList<TxtgSurface> Surfaces { get; private init; } = [];
 
     /// <summary>
-    /// The four component selectors from the header, for red, green, blue and alpha: 0 to 3 pick R, G, B or A, 4 is
-    /// zero and 5 is one. A file made without a template has the identity, 0 1 2 3.
+    /// The four component selectors the game reads the texture through, for red, green, blue and alpha: 0 to 3 pick R, G, B or A, 4 is
+    /// zero and 5 is one. They are the low three bits of the header's bytes 0x14 to 0x17; a byte whose low bits are 6 or 7 says the
+    /// texture is read as it is, which is the identity, 0 1 2 3. Bytes 0x18 to 0x1B hold the identity or a copy of these and are not what
+    /// the game reads: a white constant texture is 5 5 5 5 at 0x14 and 0 0 0 0 at 0x18.
     /// </summary>
     public (byte Red, byte Green, byte Blue, byte Alpha) ChannelSelectors
-        => _header.Length == HeaderSize ? (_header[0x18], _header[0x19], _header[0x1A], _header[0x1B]) : ((byte)0, (byte)1, (byte)2, (byte)3);
+    {
+        get
+        {
+            if (_header.Length != HeaderSize) return ((byte)0, (byte)1, (byte)2, (byte)3);
+
+            byte red = (byte)(_header[0x14] & 7), green = (byte)(_header[0x15] & 7), blue = (byte)(_header[0x16] & 7), alpha = (byte)(_header[0x17] & 7);
+            return Math.Max(Math.Max(red, green), Math.Max(blue, alpha)) > 5 ? ((byte)0, (byte)1, (byte)2, (byte)3) : (red, green, blue, alpha);
+        }
+    }
 
     public string FormatName
     {
@@ -396,10 +406,11 @@ public sealed class TxtgFile
         header[15] = 2;
         header[0x10] = 1;
 
-        header[0x18] = 0;
-        header[0x19] = 1;
-        header[0x1A] = 2;
-        header[0x1B] = 3;
+        for (int i = 0; i < 4; i++)
+        {
+            header[0x14 + i] = (byte)i;
+            header[0x18 + i] = (byte)i;
+        }
 
         BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(0x3E), 768);
         // A float. 70 in 16,520 containers, 50 in 10,951, -1 in 1,607.
